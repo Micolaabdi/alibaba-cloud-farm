@@ -84,7 +84,7 @@ if not IMAP_USER or not IMAP_PASS or not EMAIL_DOMAIN:
 
 REGISTER_URL = "https://account.alibabacloud.com/register/intl_register.htm"
 
-MAX_ATTEMPTS = 20  # Max registration attempts per run
+MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS", "20"))  # Max registration attempts per run
 RESULTS_FILE = os.environ.get("RESULTS_FILE", "results.json")
 MODELSTUDIO_URL = "https://modelstudio.console.alibabacloud.com/"
 
@@ -366,7 +366,12 @@ def register_one_attempt(browser):
     
     # ─ Step 1: Navigate ─
     print("  [1] Navigating...")
-    page.goto(REGISTER_URL, timeout=120000, wait_until="domcontentloaded")
+    try:
+        page.goto(REGISTER_URL, timeout=120000, wait_until="domcontentloaded")
+    except Exception as nav_err:
+        print(f"  [1] ⚠️ Navigation error: {nav_err}")
+        page.close()
+        return "FAIL"
     
     # Wait for passport iframe — proxy is slower, wait up to 30s
     frame = None
@@ -1015,9 +1020,32 @@ def register_one_attempt(browser):
 
 def main():
     results = load_results()
+    
+    # ─ Proxy support ─
+    # Format: host:port:user:pass  (set via FARM_PROXY env var)
+    proxy_str = os.environ.get("FARM_PROXY", "")
+    proxy_config = None
+    if proxy_str:
+        parts = proxy_str.strip().split(":")
+        if len(parts) == 4:
+            phost, pport, puser, ppass = parts
+            proxy_config = {
+                "server": f"http://{phost}:{pport}",
+                "username": puser,
+                "password": ppass,
+            }
+            print(f"Proxy: http://{phost}:{pport} (user: {puser})")
+        elif len(parts) == 2:
+            proxy_config = {"server": f"http://{parts[0]}:{parts[1]}"}
+            print(f"Proxy: http://{parts[0]}:{parts[1]} (no auth)")
+        else:
+            print(f"⚠️ Invalid FARM_PROXY format: {proxy_str}")
+    
+    if not proxy_config:
+        print("No proxy — direct VPS IP")
+    
     print(f"=== Alibaba Cloud Farm ===")
     print(f"Existing accounts: {len(results)}")
-    print(f"No proxy — direct VPS IP")
     print(f"Slider solver: {'uinput' if UINPUT_AVAILABLE else 'DISABLED'}")
     print(f"Max attempts: {MAX_ATTEMPTS}")
     print()
@@ -1025,28 +1053,39 @@ def main():
     # Setup virtual mouse for slider solving
     mouse = setup_virtual_mouse()
     
-    with Camoufox(
+    camoufox_kwargs = dict(
         headless=False,
         humanize=True,
         locale="en-US",
-    ) as browser:
+    )
+    if proxy_config:
+        camoufox_kwargs["proxy"] = proxy_config
+    
+    with Camoufox(**camoufox_kwargs) as browser:
         
         success_count = 0
         slider_count = 0
         fail_count = 0
-        
-        for attempt in range(1, MAX_ATTEMPTS + 1):
+        retries_left = MAX_ATTEMPTS * 15  # Allow up to 15x retries for slider/captcha
+
+        while success_count < MAX_ATTEMPTS and retries_left > 0:
+            retries_left -= 1
+            current_attempt = success_count + slider_count + fail_count + 1
             print(f"\n{'='*50}")
-            print(f"ATTEMPT {attempt}/{MAX_ATTEMPTS}")
+            print(f"ATTEMPT {current_attempt} (target: {MAX_ATTEMPTS} success, retries left: {retries_left})")
             print(f"{'='*50}")
-            
+
             result = register_one_attempt(browser)
-            
+
             if result == "SLIDER":
                 slider_count += 1
-                print(f"  → Slider detected, skipping (total: {slider_count})")
+                print(f"  → Slider detected, retrying... (total slider: {slider_count})")
+                # Exponential backoff: more sliders = longer wait
+                wait = min(5 + slider_count * 3, 30)
+                print(f"  → Waiting {wait}s before retry...")
+                time.sleep(wait)
                 continue
-            
+
             if result and isinstance(result, dict):
                 results.append(result)
                 save_results(results)
@@ -1055,9 +1094,10 @@ def main():
                 print(f"  → Email: {result['email']}")
                 print(f"  → API Key: {result['api_key'][:30]}...")
                 continue
-            
+
             fail_count += 1
             print(f"  → ❌ Failed (total fails: {fail_count})")
+            time.sleep(random.uniform(1, 3))
     
     print(f"\n{'='*50}")
     print(f"DONE: {success_count} success, {slider_count} slider, {fail_count} fail")
