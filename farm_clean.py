@@ -29,63 +29,14 @@ except Exception:
 # ─ Global virtual mouse ─
 _virtual_mouse = None
 
-# ─ Config ───────────
-# IMAP credentials — set via environment variables.
-# For Gmail: use an App Password (NOT your regular password).
-# Enable 2FA → Google Account → Security → App passwords.
-#
-# You also need a catch-all domain that forwards to your Gmail.
-# Set up catch-all forwarding in your domain DNS (e.g. Cloudflare email routing).
-#
-# Required env vars:
-#   IMAP_USER    — your Gmail address (e.g. you@gmail.com)
-#   IMAP_PASS    — Gmail App Password (spaces ok, e.g. "abcd efgh ijkl mnop")
-#   EMAIL_DOMAIN — your catch-all domain (e.g. yourdomain.com)
-#
-# Copy .env.example to .env and fill in your values, OR export them in your shell.
-
-IMAP_USER = os.environ.get("IMAP_USER", "")
-IMAP_PASS = os.environ.get("IMAP_PASS", "")
-EMAIL_DOMAIN = os.environ.get("EMAIL_DOMAIN", "")
-IMAP_HOST = os.environ.get("IMAP_HOST", "imap.gmail.com")
-IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
-
-# Try loading from .env if python-dotenv is available
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-    IMAP_USER = os.environ.get("IMAP_USER", IMAP_USER)
-    IMAP_PASS = os.environ.get("IMAP_PASS", IMAP_PASS)
-    EMAIL_DOMAIN = os.environ.get("EMAIL_DOMAIN", EMAIL_DOMAIN)
-    IMAP_HOST = os.environ.get("IMAP_HOST", IMAP_HOST)
-    IMAP_PORT = int(os.environ.get("IMAP_PORT", str(IMAP_PORT)))
-except ImportError:
-    pass
-
-# Validate required config
-if not IMAP_USER or not IMAP_PASS or not EMAIL_DOMAIN:
-    print("=" * 60)
-    print("ERROR: IMAP credentials not configured!")
-    print()
-    print("Set these environment variables (or create a .env file):")
-    print("  IMAP_USER=your@gmail.com")
-    print("  IMAP_PASS=your-app-password")
-    print("  EMAIL_DOMAIN=your-catchall-domain.com")
-    print()
-    print("For Gmail App Passwords:")
-    print(" 1. Enable 2FA: Google Account → Security → 2-Step Verification")
-    print(" 2. Generate:   Google Account → Security → App passwords")
-    print()
-    print("For catch-all domain:")
-    print("  Set up email forwarding for *@yourdomain.com → your@gmail.com")
-    print("  (e.g. Cloudflare Email Routing, ImprovMX, etc.)")
-    print("=" * 60)
-    sys.exit(1)
-
+# ── Config ───────────────────────────────────────────────────
+GMAIL_USER = "REDACTED"
+GMAIL_APP_PW = "REDACTED"
+EMAIL_DOMAIN = "REDACTED"
 REGISTER_URL = "https://account.alibabacloud.com/register/intl_register.htm"
 
 MAX_ATTEMPTS = 20  # Max registration attempts per run
-RESULTS_FILE = os.environ.get("RESULTS_FILE", "results.json")
+RESULTS_FILE = "/home/ubuntu/alibaba-farm/results.json"
 MODELSTUDIO_URL = "https://modelstudio.console.alibabacloud.com/"
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -102,13 +53,13 @@ def generate_password():
     return pw
 
 def read_otp_from_imap(target_email, timeout=120):
-    """Read OTP verification code from IMAP — only NEW emails for this email."""
+    """Read OTP verification code from Gmail IMAP — only NEW emails for this email."""
     print(f"[IMAP] Waiting for OTP to {target_email}...")
     start = time.time()
     while time.time() - start < timeout:
         try:
-            mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
-            mail.login(IMAP_USER, IMAP_PASS)
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+            mail.login(GMAIL_USER, GMAIL_APP_PW)
             mail.select("INBOX")
             # Search ALL emails from alibaba, then filter by To header
             status, messages = mail.search(None, '(FROM "alibaba")')

@@ -5,10 +5,11 @@ Bulk-register Alibaba Cloud accounts and harvest Model Studio API keys. Each new
 ## Features
 
 - **Camoufox browser automation** (Firefox-based, anti-detect)
-- **IMAP OTP verification** — Cloudflare catch-all domain → Gmail
+- **IMAP OTP verification** — works with any IMAP provider (Gmail, Outlook, etc.)
 - **No login needed** — session carries from register to Model Studio
 - **Auto slider skip** — if Baxia captcha appears, skip and retry
 - **API key extraction** — `sk-ws-...` key auto-extracted from modal
+- **Configurable via `.env`** — no hardcoded credentials
 
 ## Flow (9 steps)
 
@@ -22,9 +23,31 @@ Bulk-register Alibaba Cloud accounts and harvest Model Studio API keys. Each new
 8. Dashboard → API Key → Create API Key → OK
 9. Extract `sk-ws-...` API key from modal
 
+## Prerequisites
+
+### 1. Catch-all Domain
+
+You need a domain with **catch-all email forwarding** — any `*@yourdomain.com` lands in your inbox.
+
+Options:
+- **Cloudflare Email Routing** (free) — set catch-all rule → forward to your Gmail
+- **ImprovMX** (free tier) — MX records → forward to your email
+- **Self-hosted** — any mail server with catch-all alias
+
+### 2. Gmail App Password
+
+If using Gmail as your inbox:
+
+1. Enable **2-Step Verification**: [Google Account → Security](https://myaccount.google.com/security)
+2. Generate **App Password**: [Google Account → App passwords](https://myaccount.google.com/apppasswords)
+3. Copy the 16-char password (format: `abcd efgh ijkl mnop`)
+
 ## Setup
 
 ```bash
+git clone https://github.com/Micolaabdi/alibaba-cloud-farm.git
+cd alibaba-cloud-farm
+
 pip install -r requirements.txt
 camoufox fetch  # download browser binary (~700MB)
 sudo chmod 666 /dev/uinput  # for slider solver (optional)
@@ -32,12 +55,36 @@ sudo chmod 666 /dev/uinput  # for slider solver (optional)
 
 ## Config
 
-Edit `farm.py`:
-```python
-GMAIL_USER = "your@gmail.com"
-GMAIL_APP_PW = "your app password"
-EMAIL_DOMAIN = "yourdomain.com"  # Cloudflare catch-all → Gmail
+Copy the example env file and fill in your credentials:
+
+```bash
+cp .env.example .env
 ```
+
+Edit `.env`:
+
+```env
+IMAP_USER=your@gmail.com
+IMAP_PASS=abcd efgh ijkl mnop
+EMAIL_DOMAIN=your-catchall-domain.com
+```
+
+Or export as environment variables:
+
+```bash
+export IMAP_USER="your@gmail.com"
+export IMAP_PASS="abcd efgh ijkl mnop"
+export EMAIL_DOMAIN="yourdomain.com"
+```
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `IMAP_USER` | ✅ | — | Your IMAP email address (e.g. Gmail) |
+| `IMAP_PASS` | ✅ | — | IMAP password (Gmail App Password, not your regular password) |
+| `EMAIL_DOMAIN` | ✅ | — | Your catch-all domain for receiving OTPs |
+| `IMAP_HOST` | ❌ | `imap.gmail.com` | IMAP server hostname |
+| `IMAP_PORT` | ❌ | `993` | IMAP server port |
+| `RESULTS_FILE` | ❌ | `results.json` | Path to save harvested accounts |
 
 ## Run
 
@@ -48,6 +95,7 @@ xvfb-run -a python3 farm.py
 ## Results
 
 Accounts saved to `results.json`:
+
 ```json
 [
   {
@@ -69,8 +117,8 @@ Accounts saved to `results.json`:
 ## API Key Usage
 
 ```bash
-curl https://ws-xxxxx.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions \
-  -H "Authorization: Bearer sk-ws-..." \
+curl https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen3.7-max","messages":[{"role":"user","content":"Hello"}]}'
 ```
