@@ -1,0 +1,3 @@
+camoufox
+playwright
+python-uinput

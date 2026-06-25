@@ -1,0 +1,24 @@
+# Debug screenshots
+*.png
+
+# Logs
+*.log
+
+# Cache
+__pycache__/
+*.pyc
+
+# Debug scripts (not needed)
+debug_*.py
+test_*.py
+dbg*.py
+
+# SliderCaptchaSolver repo (third-party)
+SliderCaptchaSolver/
+
+# Results (contains API keys — sensitive!)
+results.json
+debug_result.json
+
+# Temp files
+*.html
