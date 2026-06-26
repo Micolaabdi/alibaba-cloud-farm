@@ -282,11 +282,70 @@ def humanly_drag(mouse, start_x, end_x, y, duration=1.2):
     print("  [DRAG] Done")
 
 
+def humanly_drag_playwright(page, start_x, end_x, y, duration=1.5):
+    """Human-behavior slider drag using Playwright mouse API.
+    Cross-platform — works on Windows without uinput/xdotool.
+    Does NOT move the OS cursor — injects events directly into the browser."""
+    steps = max(35, min(int(50 + random.gauss(0, 8)), 80))
+    print(f"  [DRAG] {start_x:.0f}→{end_x:.0f}, {steps} steps, {duration:.2f}s (playwright)")
+
+    # Move to start
+    page.mouse.move(start_x, y)
+    time.sleep(0.3)
+
+    # Mouse down
+    page.mouse.down()
+    time.sleep(0.2)
+
+    # Drag with bezier path + tremor + speed profile
+    path = _bezier_path(start_x, end_x, y, steps)
+    delays = _speed_profile(steps)
+
+    for i, (px, py) in enumerate(path):
+        tremor = 1.2 if i < 5 else (0.6 if i < steps - 5 else 0.4)
+        fx = px + random.gauss(0, tremor)
+        fy = py + random.gauss(0, tremor * 0.6)
+        page.mouse.move(fx, fy)
+
+        step_delay = (duration / steps) * delays[min(i, len(delays) - 1)]
+        if random.random() < 0.04 and 5 < i < steps - 5:
+            step_delay *= random.uniform(2.5, 4.0)
+        time.sleep(max(0.004, step_delay))
+
+    # Mouse up
+    page.mouse.up()
+    time.sleep(0.3)
+    print("  [DRAG] Done (playwright)")
+
+
+def _wait_for_punish_iframe(page, timeout=15):
+    """Wait for the baxia-dialog-content (punish) iframe to appear and load."""
+    for _ in range(timeout):
+        for frame in page.frames:
+            if "punish" in frame.url or "nocaptcha" in frame.url:
+                # Check if frame content has loaded (has body content)
+                try:
+                    ready = frame.evaluate("() => document.readyState === 'complete' && !!document.querySelector('#nc_1_n1z, .nc_iconfont, .btn_slide')")
+                    if ready:
+                        return frame
+                except:
+                    pass
+                # Even if not fully ready, return it if URL is set
+                if frame.url and "punish" in frame.url:
+                    return frame
+        time.sleep(1)
+    return None
+
+
 def find_slider_handle(page):
     """Search all frames for baxia slider handle."""
     for frame in page.frames:
+        # Skip about:blank frames
+        if "about:blank" in frame.url:
+            continue
         for sel in ['#nc_1_n1z', '.nc_iconfont.btn_slide', '.btn_slide',
-                     '#nc_1_n1z', 'span.nc_iconfont']:
+                     'span.nc_iconfont', '[role="slider"]',
+                     '.nc_iconfont', 'span.btn_slide']:
             try:
                 el = frame.query_selector(sel)
                 if el:
@@ -299,21 +358,34 @@ def find_slider_handle(page):
 
 
 def solve_slider(page, mouse):
-    """Find and solve baxia slider using uinput virtual mouse."""
-    if not mouse:
+    """Find and solve baxia slider.
+    Uses uinput+xdotool on Linux, Playwright mouse API on Windows/other."""
+    # Determine drag method
+    use_playwright = not mouse or not UINPUT_AVAILABLE
+    if use_playwright:
+        print("  [SLIDER] Using Playwright mouse (no uinput)")
+    elif not mouse:
         print("  [SLIDER] No virtual mouse — can't solve")
         return False
 
-    # Wait for slider to appear
+    # Step 1: Wait for the punish iframe to appear and load
+    punish_frame = _wait_for_punish_iframe(page, timeout=10)
+    if punish_frame:
+        print(f"  [SLIDER] Punish iframe loaded: {punish_frame.url[:60]}")
+    else:
+        print("  [SLIDER] No punish iframe — checking all frames")
+
+    # Step 2: Wait for slider handle to appear (increased to 15 retries = 30s)
     el, frame, sel = None, None, None
-    for wait in range(10):
+    for wait in range(15):
         el, frame, sel = find_slider_handle(page)
         if el:
             break
         time.sleep(2)
 
     if not el:
-        print("  [SLIDER] No slider found")
+        print("  [SLIDER] No slider found after 30s")
+        safe_screenshot(page, "/home/ubuntu/alibaba-farm/slider_not_found.png")
         return False
 
     print(f"  [SLIDER] Found '{sel}' in frame {frame.url[:50]}")
@@ -341,18 +413,69 @@ def solve_slider(page, mouse):
     print(f"  [SLIDER] Handle at ({start_x:.0f},{start_y:.0f}), drag {drag_dist:.0f}px")
     safe_screenshot(page, "/home/ubuntu/alibaba-farm/slider_before_drag.png")
 
-    # Drag!
-    humanly_drag(mouse, start_x, end_x, start_y, duration=1.5)
+    # Drag! — use Playwright mouse on Windows, xdotool on Linux
+    if use_playwright:
+        humanly_drag_playwright(page, start_x, end_x, start_y, duration=1.5)
+    else:
+        humanly_drag(mouse, start_x, end_x, start_y, duration=1.5)
 
     time.sleep(3)
     safe_screenshot(page, "/home/ubuntu/alibaba-farm/slider_after_drag.png")
-    # Check if slider is gone
+
+    # Check if slider is gone or success indicator present
     el2, _, _ = find_slider_handle(page)
     if not el2:
         print("  [SLIDER] ✅ SOLVED!")
         return True
+
+    # Fallback: try JS-based drag inside the frame
+    print("  [SLIDER] Playwright drag failed — trying JS drag fallback...")
+    try:
+        js_result = frame.evaluate("""() => {
+            const handle = document.querySelector('#nc_1_n1z') || document.querySelector('.btn_slide');
+            if (!handle) return 'no handle';
+            const track = document.querySelector('#nc_1__scale_text') || document.querySelector('.nc_scale');
+            if (!track) return 'no track';
+            const box = handle.getBoundingClientRect();
+            const trackBox = track.getBoundingClientRect();
+            const startX = box.x + box.width / 2;
+            const startY = box.y + box.height / 2;
+            const endX = trackBox.x + trackBox.width - box.width / 2;
+            
+            function dispatchMouseEvent(type, x, y) {
+                const el = document.elementFromPoint(x, y) || handle;
+                const evt = new MouseEvent(type, {
+                    bubbles: true, cancelable: true,
+                    clientX: x, clientY: y,
+                    button: 0, buttons: type === 'mouseup' ? 0 : 1,
+                });
+                el.dispatchEvent(evt);
+            }
+            
+            dispatchMouseEvent('mousedown', startX, startY);
+            const steps = 40;
+            for (let i = 0; i <= steps; i++) {
+                const t = i / steps;
+                const eased = 1 - Math.pow(1 - t, 2);
+                const x = startX + (endX - startX) * eased;
+                const y = startY + (Math.random() - 0.5) * 2;
+                dispatchMouseEvent('mousemove', x, y);
+            }
+            dispatchMouseEvent('mouseup', endX, startY);
+            return 'dragged';
+        }""")
+        print(f"  [SLIDER] JS drag result: {js_result}")
+        time.sleep(3)
+    except Exception as e:
+        print(f"  [SLIDER] JS drag error: {e}")
+
+    # Final check
+    el3, _, _ = find_slider_handle(page)
+    if not el3:
+        print("  [SLIDER] ✅ SOLVED (via JS fallback)!")
+        return True
     else:
-        print("  [SLIDER] ❌ Still visible after drag")
+        print("  [SLIDER] ❌ Still visible after all attempts")
         return False
 
 
@@ -477,15 +600,21 @@ def register_one_attempt(browser):
         slider = frame.query_selector("#risk_slider_container")
         if slider and slider.is_visible() and wait >= 3:
             print(f"  [3] ⚠️ Slider detected — attempting solve...")
-            if _virtual_mouse and solve_slider(page, _virtual_mouse):
+            if solve_slider(page, _virtual_mouse):
                 print(f"  [3] ✅ Slider solved! Checking if page advanced...")
-                time.sleep(3)
-                frame = find_register_frame(page)
-                if frame:
-                    tabs = frame.query_selector_all("li[role='tab']")
-                    if len(tabs) > 0:
-                        print(f"  [3] ✅ Success! Page advanced after slider solve")
-                        break
+                # Wait for page to process the slider solve (up to 10s)
+                advanced = False
+                for adv_wait in range(5):
+                    time.sleep(2)
+                    frame = find_register_frame(page)
+                    if frame:
+                        tabs = frame.query_selector_all("li[role='tab']")
+                        if len(tabs) > 0:
+                            print(f"  [3] ✅ Success! Page advanced after slider solve ({(adv_wait+1)*2}s)")
+                            advanced = True
+                            break
+                if advanced:
+                    break
             print(f"  [3] ❌ Slider solve failed — SKIP")
             page.close()
             return "SLIDER"
