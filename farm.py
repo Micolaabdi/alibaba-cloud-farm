@@ -1218,10 +1218,16 @@ def main():
             if result and isinstance(result, dict):
                 results.append(result)
                 save_results(results)
+                # Don't count SESSION_LOST as success
+                if result.get("api_key") == "SESSION_LOST":
+                    fail_count += 1
+                    print(f"  → ❌ Session lost — API key not retrieved (total fails: {fail_count})")
+                    time.sleep(random.uniform(1, 3))
+                    continue
                 success_count += 1
                 print(f"  → ✅ SUCCESS! Total accounts: {success_count}")
                 print(f"  → Email: {result['email']}")
-                print(f"  → API Key: {result['api_key'][:30]}...")
+                print(f"  → API Key: {result['api_key']}")
                 continue
 
             fail_count += 1
@@ -1232,6 +1238,21 @@ def main():
     print(f"DONE: {success_count} success, {slider_count} slider, {fail_count} fail")
     print(f"Total accounts in results.json: {len(results)}")
     print(f"{'='*50}")
+    
+    # Print full summary of all successfully farmed accounts
+    if success_count > 0:
+        print(f"\n{'='*50}")
+        print(f"FARMED ACCOUNTS ({success_count} total):")
+        print(f"{'='*50}")
+        for i, r in enumerate(results, 1):
+            email = r.get("email", "?")
+            key = r.get("api_key", "?")
+            if key == "SESSION_LOST":
+                print(f"  {i}. {email} → ❌ SESSION_LOST")
+            else:
+                print(f"  {i}. {email}")
+                print(f"     Key: {key}")
+        print(f"{'='*50}")
 
 
 if __name__ == "__main__":
