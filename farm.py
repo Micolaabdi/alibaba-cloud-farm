@@ -748,12 +748,39 @@ def register_one_attempt(browser):
     
     # Wait for SPA to load
     print("  [7] Waiting for SPA load...")
+    session_lost = False
     for wait in range(30):
         time.sleep(3)
         body = page.inner_text("body")[:2000]
         if "Sign In" in body or "Enter your email" in body or "log on" in body.lower():
-            print(f"  [7] ❌ Login page — session lost after {wait*3}s")
-            safe_screenshot(page, "/home/ubuntu/alibaba-farm/step7_login_lost.png")
+            print(f"  [7] ⚠️ Login page — session lost after {wait*3}s — attempting login...")
+            session_lost = True
+            break
+        if "Dashboard" in body or "Model Studio" in body or "api" in body.lower():
+            print(f"  [7] ✅ Model Studio loaded after {wait*3}s")
+            break
+    
+    # ─ Step 7-retry: If session lost, login with new credentials ─
+    if session_lost:
+        safe_screenshot(page, "/home/ubuntu/alibaba-farm/step7_login_lost.png")
+        login_url = "https://account.alibabacloud.com/login.htm"
+        print(f"  [7] Navigating to login page: {login_url}")
+        page.goto(login_url, timeout=120000, wait_until="domcontentloaded")
+        time.sleep(3)
+        
+        # Find login iframe (same structure as register)
+        login_frame = None
+        for _ in range(10):
+            for f in page.frames[1:]:
+                if "passport.alibabacloud.com" in f.url:
+                    login_frame = f
+                    break
+            if login_frame:
+                break
+            time.sleep(2)
+        
+        if not login_frame:
+            print("  [7] ❌ No login iframe found!")
             page.close()
             return {
                 "email": test_email,
@@ -761,9 +788,79 @@ def register_one_attempt(browser):
                 "api_key": "SESSION_LOST",
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
             }
-        if "Dashboard" in body or "Model Studio" in body or "api" in body.lower():
-            print(f"  [7] ✅ Model Studio loaded after {wait*3}s")
-            break
+        
+        print(f"  [7] Found login frame: {login_frame.url[:60]}")
+        
+        # Fill email
+        email_input = login_frame.query_selector("#email") or login_frame.query_selector("input[name='email']")
+        if email_input:
+            email_input.fill("")
+            email_input.type(test_email, delay=30)
+            print(f"  [7] Typed email: {test_email}")
+        else:
+            print("  [7] ❌ No email input in login frame!")
+        
+        # Fill password
+        pw_input = login_frame.query_selector("#password") or login_frame.query_selector("input[type='password']")
+        if pw_input:
+            pw_input.fill("")
+            pw_input.type(test_password, delay=30)
+            print(f"  [7] Typed password (len={len(test_password)})")
+        
+        time.sleep(1)
+        
+        # Click Sign In / Login button
+        for b in login_frame.query_selector_all("button, [role='button']"):
+            txt = b.inner_text().lower()
+            if "sign in" in txt or "log in" in txt or "login" in txt:
+                b.click()
+                print(f"  [7] Clicked: '{b.inner_text().strip()}'")
+                break
+        
+        # Wait for login to complete and redirect
+        print("  [7] Waiting for login redirect...")
+        login_ok = False
+        for wait in range(20):
+            time.sleep(3)
+            current_url = page.url
+            body = page.inner_text("body")[:2000]
+            if "Sign In" not in body and "Enter your email" not in body:
+                if "dashboard" in current_url.lower() or "console" in current_url.lower() or "modelstudio" in current_url.lower() or "account" in current_url.lower():
+                    print(f"  [7] ✅ Login successful! URL: {current_url[:80]}")
+                    login_ok = True
+                    break
+            if "captcha" in body.lower() or "slider" in body.lower() or "risk" in body.lower():
+                print(f"  [7] ⚠️ Captcha appeared during login — session may be restricted")
+                break
+        
+        if not login_ok:
+            print("  [7] ❌ Login failed — SESSION_LOST")
+            safe_screenshot(page, "/home/ubuntu/alibaba-farm/step7_login_failed.png")
+            page.close()
+            return {
+                "email": test_email,
+                "password": test_password,
+                "api_key": "SESSION_LOST",
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+        
+        # Now navigate to Model Studio with established session
+        print("  [7] Re-navigating to Model Studio with login session...")
+        page.goto(MODELSTUDIO_URL, timeout=120000, wait_until="domcontentloaded")
+        time.sleep(5)
+        body = page.inner_text("body")[:2000]
+        if "Sign In" in body or "Enter your email" in body:
+            print("  [7] ❌ Still login page after login+retry — SESSION_LOST")
+            safe_screenshot(page, "/home/ubuntu/alibaba-farm/step7_still_lost.png")
+            page.close()
+            return {
+                "email": test_email,
+                "password": test_password,
+                "api_key": "SESSION_LOST",
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+        print("  [7] ✅ Model Studio loaded after login!")
+    
     safe_screenshot(page, "/home/ubuntu/alibaba-farm/step7_loaded.png")
     
     # ─ Step 7b: Click Dashboard tab in top nav → switches to console view ─
