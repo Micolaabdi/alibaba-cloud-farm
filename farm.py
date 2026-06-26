@@ -1280,7 +1280,7 @@ def main():
     mouse = setup_virtual_mouse()
     
     camoufox_kwargs = dict(
-        headless=False,
+        headless=os.environ.get("FARM_HEADED", "").lower() not in ("1", "true", "yes"),
         humanize=True,
         locale="en-US",
     )
