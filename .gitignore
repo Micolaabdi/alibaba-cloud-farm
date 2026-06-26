@@ -25,3 +25,11 @@ debug_result.json
 
 # Environment variables (contains credentials — sensitive!)
 .env
+
+# Debug files
+debug*.py
+network_log.json
+*.png
+*.jpg
+screenshots/
+__pycache__/
