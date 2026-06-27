@@ -322,16 +322,17 @@ def _wait_for_punish_iframe(page, timeout=15):
     """Wait for the baxia-dialog-content (punish) iframe to appear and load."""
     for _ in range(timeout):
         for frame in page.frames:
-            if "punish" in frame.url or "nocaptcha" in frame.url:
-                # Check if frame content has loaded (has body content)
+            url_lower = frame.url.lower() if frame.url else ""
+            if "punish" in url_lower or "nocaptcha" in url_lower or "bixi" in url_lower:
+                # Check if frame content has loaded
                 try:
-                    ready = frame.evaluate("() => document.readyState === 'complete' && !!document.querySelector('#nc_1_n1z, .nc_iconfont, .btn_slide')")
+                    ready = frame.evaluate("() => document.readyState === 'complete' && !!document.querySelector('#nc_1_n1z, .nc_iconfont, .btn_slide, [class*=\"slide\"], [class*=\"drag\"]')")
                     if ready:
                         return frame
                 except:
                     pass
                 # Even if not fully ready, return it if URL is set
-                if frame.url and "punish" in frame.url:
+                if frame.url and ("punish" in url_lower or "bixi" in url_lower):
                     return frame
         time.sleep(1)
     return None
@@ -339,19 +340,68 @@ def _wait_for_punish_iframe(page, timeout=15):
 
 def find_slider_handle(page):
     """Search all frames for baxia slider handle."""
+    # Standard NoCaptcha selectors + generic fallbacks
+    selectors = [
+        '#nc_1_n1z', '.nc_iconfont.btn_slide', '.btn_slide',
+        'span.nc_iconfont', '[role="slider"]',
+        '.nc_iconfont', 'span.btn_slide',
+        # Generic fallbacks for bixi.alicdn.com variant
+        '[class*="slider-btn"]', '[class*="drag-handle"]', '[class*="handler"]',
+        'div[id*="slider"][class*="btn"]', 'span[id*="n1z"]',
+        '.slide-btn', '#nc_1_n1z_bar',
+    ]
     for frame in page.frames:
-        # Skip about:blank frames
-        if "about:blank" in frame.url:
+        if "about:blank" in (frame.url or ""):
             continue
-        for sel in ['#nc_1_n1z', '.nc_iconfont.btn_slide', '.btn_slide',
-                     'span.nc_iconfont', '[role="slider"]',
-                     '.nc_iconfont', 'span.btn_slide']:
+        for sel in selectors:
             try:
                 el = frame.query_selector(sel)
                 if el:
                     box = el.bounding_box()
                     if box and box['width'] > 0:
                         return el, frame, sel
+            except:
+                pass
+    
+    # JS-based fallback: find any draggable element in punish/bixi frames
+    for frame in page.frames:
+        url_lower = (frame.url or "").lower()
+        if "about:blank" in url_lower:
+            continue
+        if "punish" in url_lower or "bixi" in url_lower or "nocaptcha" in url_lower:
+            try:
+                el = frame.evaluate("""() => {
+                    // Look for any element that looks like a slider handle
+                    const candidates = document.querySelectorAll('span, div, button');
+                    for (const el of candidates) {
+                        const rect = el.getBoundingClientRect();
+                        // Slider handle is typically small (20-60px) and positioned at left of a wider track
+                        if (rect.width > 15 && rect.width < 80 && rect.height > 15 && rect.height < 60) {
+                            const cls = (el.className || '').toLowerCase();
+                            const id = (el.id || '').toLowerCase();
+                            if (cls.includes('slide') || cls.includes('drag') || cls.includes('btn') || 
+                                id.includes('n1z') || id.includes('slider') || cls.includes('iconfont')) {
+                                return el.outerHTML.substring(0, 200);
+                            }
+                        }
+                    }
+                    return null;
+                }""")
+                if el:
+                    print(f"  [SLIDER] JS fallback found element: {el[:100]}")
+                    # Try to get the actual element
+                    for sel in ['span', 'div', 'button']:
+                        try:
+                            els = frame.query_selector_all(sel)
+                            for e in els:
+                                box = e.bounding_box()
+                                if box and 15 < box['width'] < 80 and 15 < box['height'] < 60:
+                                    cls = (e.get_attribute("class") or "").lower()
+                                    eid = (e.get_attribute("id") or "").lower()
+                                    if any(k in cls+eid for k in ['slide', 'drag', 'btn', 'n1z', 'iconfont']):
+                                        return e, frame, f"js:{sel}"
+                        except:
+                            pass
             except:
                 pass
     return None, None, None
@@ -477,6 +527,78 @@ def solve_slider(page, mouse):
     else:
         print("  [SLIDER] ❌ Still visible after all attempts")
         return False
+
+
+def _login_with_credentials(page, email, password, step_label="7"):
+    """Login to Alibaba Cloud with credentials after session lost.
+    Returns True if login successful, False otherwise."""
+    safe_screenshot(page, f"/home/ubuntu/alibaba-farm/step{step_label}_login_lost.png")
+    login_url = "https://account.alibabacloud.com/login.htm"
+    print(f"  [{step_label}] Navigating to login page: {login_url}")
+    page.goto(login_url, timeout=120000, wait_until="domcontentloaded")
+    time.sleep(3)
+    
+    # Find login iframe (same structure as register)
+    login_frame = None
+    for _ in range(10):
+        for f in page.frames[1:]:
+            if "passport.alibabacloud.com" in f.url:
+                login_frame = f
+                break
+        if login_frame:
+            break
+        time.sleep(2)
+    
+    if not login_frame:
+        print(f"  [{step_label}] No login iframe found!")
+        return False
+    
+    print(f"  [{step_label}] Found login frame: {login_frame.url[:60]}")
+    
+    # Fill email
+    email_input = login_frame.query_selector("#email") or login_frame.query_selector("input[name='email']")
+    if email_input:
+        email_input.fill("")
+        email_input.type(email, delay=30)
+        print(f"  [{step_label}] Typed email: {email}")
+    else:
+        print(f"  [{step_label}] No email input in login frame!")
+        return False
+    
+    # Fill password
+    pw_input = login_frame.query_selector("#password") or login_frame.query_selector("input[type='password']")
+    if pw_input:
+        pw_input.fill("")
+        pw_input.type(password, delay=30)
+        print(f"  [{step_label}] Typed password (len={len(password)})")
+    
+    time.sleep(1)
+    
+    # Click Sign In / Login button
+    for b in login_frame.query_selector_all("button, [role='button']"):
+        txt = b.inner_text().lower()
+        if "sign in" in txt or "log in" in txt or "login" in txt:
+            b.click()
+            print(f"  [{step_label}] Clicked: '{b.inner_text().strip()}'")
+            break
+    
+    # Wait for login to complete and redirect
+    print(f"  [{step_label}] Waiting for login redirect...")
+    for wait in range(20):
+        time.sleep(3)
+        current_url = page.url
+        body = page.inner_text("body")[:2000]
+        if "Sign In" not in body and "Enter your email" not in body:
+            if "dashboard" in current_url.lower() or "console" in current_url.lower() or "modelstudio" in current_url.lower() or "account" in current_url.lower():
+                print(f"  [{step_label}] Login successful! URL: {current_url[:80]}")
+                return True
+        if "captcha" in body.lower() or "slider" in body.lower() or "risk" in body.lower():
+            print(f"  [{step_label}] Captcha appeared during login — restricted")
+            return False
+    
+    print(f"  [{step_label}] Login failed — timeout")
+    safe_screenshot(page, f"/home/ubuntu/alibaba-farm/step{step_label}_login_failed.png")
+    return False
 
 
 def register_one_attempt(browser):
@@ -762,80 +884,24 @@ def register_one_attempt(browser):
     
     # ─ Step 7-retry: If session lost, login with new credentials ─
     if session_lost:
-        safe_screenshot(page, "/home/ubuntu/alibaba-farm/step7_login_lost.png")
-        login_url = "https://account.alibabacloud.com/login.htm"
-        print(f"  [7] Navigating to login page: {login_url}")
-        page.goto(login_url, timeout=120000, wait_until="domcontentloaded")
-        time.sleep(3)
-        
-        # Find login iframe (same structure as register)
-        login_frame = None
-        for _ in range(10):
-            for f in page.frames[1:]:
-                if "passport.alibabacloud.com" in f.url:
-                    login_frame = f
-                    break
-            if login_frame:
-                break
-            time.sleep(2)
-        
-        if not login_frame:
-            print("  [7] ❌ No login iframe found!")
-            page.close()
-            return {
-                "email": test_email,
-                "password": test_password,
-                "api_key": "SESSION_LOST",
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-        
-        print(f"  [7] Found login frame: {login_frame.url[:60]}")
-        
-        # Fill email
-        email_input = login_frame.query_selector("#email") or login_frame.query_selector("input[name='email']")
-        if email_input:
-            email_input.fill("")
-            email_input.type(test_email, delay=30)
-            print(f"  [7] Typed email: {test_email}")
-        else:
-            print("  [7] ❌ No email input in login frame!")
-        
-        # Fill password
-        pw_input = login_frame.query_selector("#password") or login_frame.query_selector("input[type='password']")
-        if pw_input:
-            pw_input.fill("")
-            pw_input.type(test_password, delay=30)
-            print(f"  [7] Typed password (len={len(test_password)})")
-        
-        time.sleep(1)
-        
-        # Click Sign In / Login button
-        for b in login_frame.query_selector_all("button, [role='button']"):
-            txt = b.inner_text().lower()
-            if "sign in" in txt or "log in" in txt or "login" in txt:
-                b.click()
-                print(f"  [7] Clicked: '{b.inner_text().strip()}'")
-                break
-        
-        # Wait for login to complete and redirect
-        print("  [7] Waiting for login redirect...")
-        login_ok = False
-        for wait in range(20):
-            time.sleep(3)
-            current_url = page.url
+        if _login_with_credentials(page, test_email, test_password, "7"):
+            # Re-navigate to Model Studio with established session
+            print("  [7] Re-navigating to Model Studio with login session...")
+            page.goto(MODELSTUDIO_URL, timeout=120000, wait_until="domcontentloaded")
+            time.sleep(5)
             body = page.inner_text("body")[:2000]
-            if "Sign In" not in body and "Enter your email" not in body:
-                if "dashboard" in current_url.lower() or "console" in current_url.lower() or "modelstudio" in current_url.lower() or "account" in current_url.lower():
-                    print(f"  [7] ✅ Login successful! URL: {current_url[:80]}")
-                    login_ok = True
-                    break
-            if "captcha" in body.lower() or "slider" in body.lower() or "risk" in body.lower():
-                print(f"  [7] ⚠️ Captcha appeared during login — session may be restricted")
-                break
-        
-        if not login_ok:
-            print("  [7] ❌ Login failed — SESSION_LOST")
-            safe_screenshot(page, "/home/ubuntu/alibaba-farm/step7_login_failed.png")
+            if "Sign In" in body or "Enter your email" in body:
+                print("  [7] Still login page after login+retry — SESSION_LOST")
+                page.close()
+                return {
+                    "email": test_email,
+                    "password": test_password,
+                    "api_key": "SESSION_LOST",
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+            print("  [7] Model Studio loaded after login!")
+        else:
+            print("  [7] Login failed — SESSION_LOST")
             page.close()
             return {
                 "email": test_email,
@@ -843,23 +909,6 @@ def register_one_attempt(browser):
                 "api_key": "SESSION_LOST",
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
             }
-        
-        # Now navigate to Model Studio with established session
-        print("  [7] Re-navigating to Model Studio with login session...")
-        page.goto(MODELSTUDIO_URL, timeout=120000, wait_until="domcontentloaded")
-        time.sleep(5)
-        body = page.inner_text("body")[:2000]
-        if "Sign In" in body or "Enter your email" in body:
-            print("  [7] ❌ Still login page after login+retry — SESSION_LOST")
-            safe_screenshot(page, "/home/ubuntu/alibaba-farm/step7_still_lost.png")
-            page.close()
-            return {
-                "email": test_email,
-                "password": test_password,
-                "api_key": "SESSION_LOST",
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-        print("  [7] ✅ Model Studio loaded after login!")
     
     safe_screenshot(page, "/home/ubuntu/alibaba-farm/step7_loaded.png")
     
@@ -1009,15 +1058,35 @@ def register_one_attempt(browser):
     # Check if we got redirected to login
     body = page.inner_text("body")[:2000]
     if "Sign In" in body or "Enter your email" in body:
-        print("  [7c] ❌ API Key page redirected to login — session lost")
-        safe_screenshot(page, "/home/ubuntu/alibaba-farm/step7c_login_lost.png")
-        page.close()
-        return {
-            "email": test_email,
-            "password": test_password,
-            "api_key": "SESSION_LOST",
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-        }
+        print("  [7c] Session lost at API Key page — attempting login...")
+        if _login_with_credentials(page, test_email, test_password, "7c"):
+            # Re-navigate to Model Studio then retry API key
+            print("  [7c] Re-navigating to Model Studio after login...")
+            page.goto(MODELSTUDIO_URL, timeout=120000, wait_until="domcontentloaded")
+            time.sleep(5)
+            # Click Dashboard again
+            page.evaluate("""() => { const els = document.querySelectorAll('a, span, li, [role="tab"], div'); for (const el of els) { const txt = (el.innerText || '').trim(); if (txt === 'Dashboard') { el.click(); return true; } } return false; }""")
+            time.sleep(5)
+            body = page.inner_text("body")[:2000]
+            if "Sign In" in body or "Enter your email" in body:
+                print("  [7c] Still login page after login+retry — SESSION_LOST")
+                page.close()
+                return {
+                    "email": test_email,
+                    "password": test_password,
+                    "api_key": "SESSION_LOST",
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+            print("  [7c] Model Studio loaded after login — retrying API Key search")
+        else:
+            print("  [7c] Login failed — SESSION_LOST")
+            page.close()
+            return {
+                "email": test_email,
+                "password": test_password,
+                "api_key": "SESSION_LOST",
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
     print(f"  [7c] Current URL: {page.url}")
     print(f"  [7c] Body preview: {body[:300]}")
     
